@@ -58,6 +58,7 @@ class OfflineRoutingEngine {
 
   static final Map<String, RoadNode> _nodes = _buildRoadNodes();
   static final List<RoadEdge> _edges = _buildRoadEdges();
+  static List<RoadEdge> get allRoadEdges => _edges;
 
   static Map<String, RoadNode> _buildRoadNodes() {
     final list = <RoadNode>[

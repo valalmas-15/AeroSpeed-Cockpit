@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/province_offline_model.dart';
+import 'offline_tile_service.dart';
 import 'routing_service.dart';
 
 class OfflineMapService {
@@ -276,13 +277,15 @@ class OfflineMapService {
     _updateNotifier.add(pack);
 
     try {
-      // Simulate realistic chunked download & SQLite packing
-      for (int i = 1; i <= 20; i++) {
-        await Future.delayed(const Duration(milliseconds: 120));
-        pack.downloadProgress = (i / 20.0);
-        onProgress?.call(pack.downloadProgress);
-        _updateNotifier.add(pack);
-      }
+      // 1. Unduh ubin peta nyata secara persisten ke disk
+      await OfflineTileService.instance.downloadTilesForProvince(
+        pack,
+        onProgress: (p) {
+          pack.downloadProgress = p;
+          onProgress?.call(p);
+          _updateNotifier.add(pack);
+        },
+      );
 
       _prefs = await SharedPreferences.getInstance();
       final now = DateTime.now();
@@ -316,6 +319,9 @@ class OfflineMapService {
     pack.isDownloading = false;
     pack.downloadProgress = 0.0;
     pack.downloadedAt = null;
+
+    // Hapus file ubin dari disk
+    await OfflineTileService.instance.deleteTilesForProvince(provinceId);
 
     _prefs = await SharedPreferences.getInstance();
     await _prefs!.remove('offline_map_downloaded_$provinceId');

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:geolocator/geolocator.dart';
@@ -8,10 +9,19 @@ import '../models/province_offline_model.dart';
 import '../models/route_model.dart';
 import '../models/speed_data.dart';
 import '../models/vital_signs.dart';
+import '../models/workout_session_model.dart';
 import '../services/ble_heart_rate_service.dart';
 import '../services/gps_speed_service.dart';
 import '../services/offline_map_service.dart';
 import '../services/routing_service.dart';
+import '../services/route_thumbnail_service.dart';
+import '../services/workout_history_service.dart';
+
+enum AppScreen {
+  dashboard,
+  history,
+  routeMap,
+}
 
 enum MapStyle {
   darkMatter,
@@ -57,6 +67,43 @@ class DashboardProvider extends ChangeNotifier {
   bool _shouldShowOfflinePrompt = false;
   bool _isDisposed = false;
 
+  // Screen Navigation (Dashboard vs History)
+  AppScreen _currentScreen = AppScreen.dashboard;
+  AppScreen get currentScreen => _currentScreen;
+
+  // Session State (Idle, Running, Paused)
+  SessionStatus _sessionStatus = SessionStatus.idle;
+  SessionStatus get sessionStatus => _sessionStatus;
+  bool get isSessionActive => _sessionStatus == SessionStatus.running;
+  bool get isSessionRunning => _sessionStatus == SessionStatus.running;
+  bool get isSessionPaused => _sessionStatus == SessionStatus.paused;
+  bool get isSessionIdle => _sessionStatus == SessionStatus.idle;
+
+  // Session Recorded Metrics (Accumulated strictly during active session)
+  Duration _sessionDuration = Duration.zero;
+  Duration get sessionDuration => _sessionDuration;
+  double _sessionDistanceKm = 0.0;
+  double get sessionDistanceKm => _sessionDistanceKm;
+  double _sessionMaxSpeed = 0.0;
+  double get sessionMaxSpeed => _sessionMaxSpeed;
+  double _sessionAvgSpeed = 0.0;
+  double get sessionAvgSpeed => _sessionAvgSpeed;
+  double _sessionAscentMeters = 0.0;
+  double get sessionAscentMeters => _sessionAscentMeters;
+  double _sessionDescentMeters = 0.0;
+  double get sessionDescentMeters => _sessionDescentMeters;
+  double _sessionCalories = 0.0;
+  double get sessionCalories => _sessionCalories;
+  final List<LatLng> _sessionTrackPoints = [];
+  List<LatLng> get sessionTrackPoints => List.unmodifiable(_sessionTrackPoints);
+
+  DateTime? _sessionStartTime;
+  LatLng? _sessionStartLocation;
+  final List<int> _sessionHeartRates = [];
+  Timer? _sessionDurationTimer;
+  double? _lastSessionAlt;
+  LatLng? _lastSessionPos;
+
   // Calorie accumulation timer
   Timer? _calorieTimer;
   double _accumulatedCalories = 0.0;
@@ -65,9 +112,30 @@ class DashboardProvider extends ChangeNotifier {
   GpsSpeedService get gpsService => _gpsService;
   BleHeartRateService get bleService => _bleService;
   OfflineMapService get offlineMapService => _offlineMapService;
+  WorkoutHistoryService get historyService => WorkoutHistoryService.instance;
 
   // State Getters
-  SpeedData get speedData => _speedData;
+  // Speed Data: Real-time speed & GPS are always live; telemetry stats below gauge run only during active session
+  SpeedData get speedData {
+    if (_sessionStatus == SessionStatus.idle) {
+      return _speedData.copyWith(
+        tripDuration: Duration.zero,
+        totalDistanceKm: 0.0,
+        maxSpeed: 0.0,
+        avgSpeed: 0.0,
+        totalAscentMeters: 0.0,
+        totalDescentMeters: 0.0,
+      );
+    }
+    return _speedData.copyWith(
+      tripDuration: _sessionDuration,
+      totalDistanceKm: _sessionDistanceKm,
+      maxSpeed: _sessionMaxSpeed,
+      avgSpeed: _sessionAvgSpeed,
+      totalAscentMeters: _sessionAscentMeters,
+      totalDescentMeters: _sessionDescentMeters,
+    );
+  }
   VitalSigns get vitals => _vitals;
   NavigationRoute? get currentRoute => _currentRoute;
   LatLng get currentPosition => _currentPosition;
@@ -214,6 +282,224 @@ class DashboardProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // -------------------------------------------------------------
+  // Screen & Session Lifecycle Management
+  // -------------------------------------------------------------
+  WorkoutSession? _selectedRouteMapSession;
+  WorkoutSession? get selectedRouteMapSession => _selectedRouteMapSession;
+
+  void setScreen(AppScreen screen) {
+    if (_currentScreen != screen) {
+      _currentScreen = screen;
+      notifyListeners();
+    }
+  }
+
+  void openRouteMap(WorkoutSession session) {
+    _selectedRouteMapSession = session;
+    _currentScreen = AppScreen.routeMap;
+    notifyListeners();
+  }
+
+  void closeRouteMap() {
+    _selectedRouteMapSession = null;
+    _currentScreen = AppScreen.history;
+    notifyListeners();
+  }
+
+  void startSession() {
+    _sessionStatus = SessionStatus.running;
+    _sessionStartTime = DateTime.now();
+    _sessionDuration = Duration.zero;
+    _sessionDistanceKm = 0.0;
+    _sessionMaxSpeed = _speedData.currentSpeed;
+    _sessionAvgSpeed = _speedData.currentSpeed;
+    _sessionAscentMeters = 0.0;
+    _sessionDescentMeters = 0.0;
+    _sessionCalories = 0.0;
+    _sessionHeartRates.clear();
+    _sessionTrackPoints.clear();
+    _sessionTrackPoints.add(_currentPosition);
+    _lastSessionAlt = _speedData.altitude;
+    _lastSessionPos = _currentPosition;
+    _sessionStartLocation = _currentPosition;
+
+    _sessionDurationTimer?.cancel();
+    _sessionDurationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_sessionStatus == SessionStatus.running && !_isDisposed) {
+        _sessionDuration += const Duration(seconds: 1);
+
+        // Record Heart Rate Sample
+        if (_vitals.heartRate > 40) {
+          _sessionHeartRates.add(_vitals.heartRate);
+        }
+
+        // Calorie expenditure during active session
+        final bpm = _vitals.heartRate > 50 ? _vitals.heartRate : 75;
+        final calPerMin = ((0.45 * bpm) - 20.0).clamp(1.5, 18.0);
+        _sessionCalories += (calPerMin / 60.0);
+
+        // Update dynamic avg speed
+        final hours = _sessionDuration.inSeconds / 3600.0;
+        if (hours > 0.001) {
+          _sessionAvgSpeed = _sessionDistanceKm / hours;
+        }
+
+        notifyListeners();
+      }
+    });
+
+    notifyListeners();
+  }
+
+  void pauseSession() {
+    if (_sessionStatus == SessionStatus.running) {
+      _sessionStatus = SessionStatus.paused;
+      _lastSessionPos = null; // Suspends distance accumulation during pause
+      notifyListeners();
+    }
+  }
+
+  void resumeSession() {
+    if (_sessionStatus == SessionStatus.paused) {
+      _sessionStatus = SessionStatus.running;
+      _lastSessionPos = _currentPosition;
+      _lastSessionAlt = _speedData.altitude;
+      notifyListeners();
+    }
+  }
+
+  Future<WorkoutSession?> finishSession() async {
+    if (_sessionStatus == SessionStatus.idle) return null;
+
+    _sessionDurationTimer?.cancel();
+    _sessionDurationTimer = null;
+
+    final now = DateTime.now();
+    final start = _sessionStartTime ?? now.subtract(_sessionDuration);
+
+    // Calculate HR statistics
+    int avgHr = 0;
+    int maxHr = 0;
+    int minHr = 0;
+    if (_sessionHeartRates.isNotEmpty) {
+      avgHr = (_sessionHeartRates.reduce((a, b) => a + b) / _sessionHeartRates.length).round();
+      maxHr = _sessionHeartRates.reduce(max);
+      minHr = _sessionHeartRates.reduce(min);
+    } else if (_vitals.heartRate > 40) {
+      avgHr = _vitals.heartRate;
+      maxHr = _vitals.heartRate;
+      minHr = _vitals.heartRate;
+    }
+
+    final routeTitle = _currentRoute?.destinationName ??
+        (_offlineMapService.currentProvince != null
+            ? 'Berkendara Bebas (${_offlineMapService.currentProvince!.name})'
+            : 'Sesi Berkendara');
+
+    // Perekaman rute MURNI koordinat yang dilalui user secara nyata selama sesi
+    final List<LatLng> pointsToSave = List<LatLng>.from(_sessionTrackPoints);
+    final sessionId = 'session_${now.millisecondsSinceEpoch}';
+
+    String? thumbPath;
+    if (pointsToSave.isNotEmpty) {
+      thumbPath = await RouteThumbnailService.instance.generateAndSaveThumbnail(
+        sessionId: sessionId,
+        points: pointsToSave,
+        isFun: _cockpitMode == CockpitMode.fun,
+      );
+    }
+
+    final session = WorkoutSession(
+      id: sessionId,
+      startTime: start,
+      endTime: now,
+      duration: _sessionDuration,
+      totalDistanceKm: _sessionDistanceKm,
+      avgSpeedKmh: _sessionAvgSpeed,
+      maxSpeedKmh: _sessionMaxSpeed,
+      totalAscentMeters: _sessionAscentMeters,
+      totalDescentMeters: _sessionDescentMeters,
+      calories: _sessionCalories,
+      speedUnit: _speedData.unit,
+      routeName: routeTitle,
+      startLocation: _sessionStartLocation != null
+          ? '${_sessionStartLocation!.latitude.toStringAsFixed(4)}, ${_sessionStartLocation!.longitude.toStringAsFixed(4)}'
+          : null,
+      destinationLocation: _currentRoute?.destinationName,
+      routePoints: pointsToSave,
+      routeThumbnailPath: thumbPath,
+      avgHeartRate: avgHr,
+      maxHeartRate: maxHr,
+      minHeartRate: minHr,
+      lastStress: _vitals.stressLevel,
+      lastSpo2: _vitals.spo2,
+      wasWatchConnected: _vitals.isConnected,
+    );
+
+    await WorkoutHistoryService.instance.saveSession(session);
+
+    // Reset session back to idle
+    _sessionStatus = SessionStatus.idle;
+    _sessionDuration = Duration.zero;
+    _sessionDistanceKm = 0.0;
+    _sessionMaxSpeed = 0.0;
+    _sessionAvgSpeed = 0.0;
+    _sessionAscentMeters = 0.0;
+    _sessionDescentMeters = 0.0;
+    _sessionCalories = 0.0;
+    _sessionHeartRates.clear();
+    _sessionTrackPoints.clear();
+    _lastSessionPos = null;
+    _lastSessionAlt = null;
+
+    notifyListeners();
+    return session;
+  }
+
+  void _updateSessionTelemetry(SpeedData data, LatLng pos) {
+    if (_sessionStatus != SessionStatus.running) return;
+
+    final curSpeed = data.currentSpeed;
+    if (curSpeed > _sessionMaxSpeed) {
+      _sessionMaxSpeed = curSpeed;
+    }
+
+    // Distance accumulation (only while session is actively running)
+    if (_lastSessionPos != null) {
+      final meters = const Distance().as(LengthUnit.Meter, _lastSessionPos!, pos);
+      if (meters > 0.5 && meters < 400) {
+        _sessionDistanceKm += (meters / 1000.0);
+      }
+    }
+    _lastSessionPos = pos;
+
+    // Record GPS route path breadcrumbs (Strava-like track)
+    if (_sessionTrackPoints.isEmpty) {
+      _sessionTrackPoints.add(pos);
+    } else {
+      final lastPt = _sessionTrackPoints.last;
+      final meters = const Distance().as(LengthUnit.Meter, lastPt, pos);
+      if (meters >= 2.5) {
+        _sessionTrackPoints.add(pos);
+      }
+    }
+
+    // Elevation accumulation
+    if (_lastSessionAlt != null && data.altitude != 0.0) {
+      final diff = data.altitude - _lastSessionAlt!;
+      if (diff > 0.6 && diff < 80.0) {
+        _sessionAscentMeters += diff;
+        _lastSessionAlt = data.altitude;
+      } else if (diff < -0.6 && diff > -80.0) {
+        _sessionDescentMeters += diff.abs();
+        _lastSessionAlt = data.altitude;
+      }
+    } else if (data.altitude != 0.0) {
+      _lastSessionAlt = data.altitude;
+    }
+  }
+
   DashboardProvider() {
     _initListeners();
     // Start in free-roam mode with NO preselected destination/route
@@ -224,6 +510,7 @@ class DashboardProvider extends ChangeNotifier {
     _initOfflineMap();
     _loadOrientationPreference();
     _loadMapThemePreference();
+    WorkoutHistoryService.instance.loadSessions();
   }
 
   bool get isBleAutoConnecting =>
@@ -235,6 +522,8 @@ class DashboardProvider extends ChangeNotifier {
     // 1. Speed & GPS Telemetry
     _speedSub = _gpsService.speedStream.listen((data) {
       _speedData = data;
+      _updateSessionTelemetry(data, _currentPosition);
+
       // When moving at normal speed (>= 1.2 km/h) or when no active navigation route exists,
       // use live GPS course-over-ground / landscape-compensated heading
       if (data.currentSpeed >= 1.2 || _currentRoute == null) {
@@ -257,6 +546,7 @@ class DashboardProvider extends ChangeNotifier {
       }
 
       _currentPosition = pos;
+      _updateSessionTelemetry(_speedData, pos);
       _updateNavigationProgress(pos);
       notifyListeners();
     });
@@ -590,6 +880,7 @@ class DashboardProvider extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    _sessionDurationTimer?.cancel();
     _calorieTimer?.cancel();
     _speedSub?.cancel();
     _positionSub?.cancel();

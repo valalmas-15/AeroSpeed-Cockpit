@@ -64,6 +64,8 @@ class VitalSigns {
   final bool isConnected;
   final String deviceName;
   final int batteryLevel; // 0 - 100%
+  final int stressLevel;
+  final int spo2;
   final List<HeartRateDataPoint> history;
 
   const VitalSigns({
@@ -76,6 +78,8 @@ class VitalSigns {
     this.isConnected = false,
     this.deviceName = 'Amazfit Active 2',
     this.batteryLevel = 85,
+    this.stressLevel = 0,
+    this.spo2 = 0,
     this.history = const [],
   });
 
@@ -96,6 +100,8 @@ class VitalSigns {
     bool? isConnected,
     String? deviceName,
     int? batteryLevel,
+    int? stressLevel,
+    int? spo2,
     List<HeartRateDataPoint>? history,
   }) {
     return VitalSigns(
@@ -108,6 +114,8 @@ class VitalSigns {
       isConnected: isConnected ?? this.isConnected,
       deviceName: deviceName ?? this.deviceName,
       batteryLevel: batteryLevel ?? this.batteryLevel,
+      stressLevel: stressLevel ?? this.stressLevel,
+      spo2: spo2 ?? this.spo2,
       history: history ?? this.history,
     );
   }

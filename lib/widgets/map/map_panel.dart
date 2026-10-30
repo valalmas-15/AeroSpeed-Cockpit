@@ -5,6 +5,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../../models/route_model.dart';
 import '../../providers/dashboard_provider.dart';
+import '../../services/offline_routing_engine.dart';
+import '../../services/offline_tile_service.dart';
 import '../../theme/app_theme.dart';
 import 'navigation_hud.dart';
 import 'offline_map_banner.dart';
@@ -178,14 +180,15 @@ class _MapPanelState extends State<MapPanel> {
             ),
             children: [
               // Navigation Map Layer (Day Mode by Default or Dark Mode)
-              // Always rendered so map tiles, roads, and cached views remain visible in both Online and Offline mode
+              // Uses PersistentCachedTileProvider which reads directly from local disk when offline!
               TileLayer(
                 key: ValueKey(provider.isDarkMap),
                 urlTemplate: 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
                 subdomains: const ['mt0', 'mt1', 'mt2', 'mt3'],
                 userAgentPackageName: 'com.speedometer.speedometer_app',
                 maxZoom: 20,
-                tileProvider: NetworkTileProvider(silenceExceptions: true),
+                maxNativeZoom: 16,
+                tileProvider: OfflineTileService.instance.getTileProvider(),
                 tileBuilder: provider.isDarkMap
                     ? (context, tileWidget, tile) {
                         return ColorFiltered(
@@ -200,6 +203,24 @@ class _MapPanelState extends State<MapPanel> {
                       }
                     : null,
               ),
+
+              // Offline Road Network Vector Layer (Visible even on cold boot offline without raster tiles!)
+              if (provider.isOfflineMode || provider.currentProvince?.isDownloaded == true) ...[
+                PolylineLayer(
+                  polylines: OfflineRoutingEngine.allRoadEdges.map((edge) {
+                    final isRingRoad = edge.roadName.toLowerCase().contains('ring road');
+                    return Polyline(
+                      points: edge.geometry,
+                      strokeWidth: isRingRoad ? 3.0 : 1.8,
+                      color: provider.isDarkMap
+                          ? (isRingRoad ? const Color(0xFF64748B) : const Color(0xFF475569).withOpacity(0.85))
+                          : (isRingRoad ? const Color(0xFF94A3B8) : const Color(0xFFCBD5E1).withOpacity(0.85)),
+                      strokeCap: StrokeCap.round,
+                      strokeJoin: StrokeJoin.round,
+                    );
+                  }).toList(),
+                ),
+              ],
 
               // Polyline Layer for Route Navigation
               if (route != null && route.polylinePoints.isNotEmpty) ...[

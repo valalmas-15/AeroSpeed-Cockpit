@@ -6,6 +6,10 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'providers/dashboard_provider.dart';
 import 'theme/app_theme.dart';
+import 'models/workout_session_model.dart';
+import 'services/workout_history_service.dart';
+import 'widgets/history/workout_history_screen.dart';
+import 'widgets/history/workout_route_map_screen.dart';
 import 'widgets/map/map_panel.dart';
 import 'widgets/speedometer/speedometer_panel.dart';
 import 'widgets/vitals/vitals_panel.dart';
@@ -57,6 +61,21 @@ class DashboardCockpitScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DashboardProvider>();
+
+    // Jika sedang di layar Peta Rute Detail (Strava-like view)
+    if (provider.currentScreen == AppScreen.routeMap && provider.selectedRouteMapSession != null) {
+      return WorkoutRouteMapScreen(
+        session: provider.selectedRouteMapSession!,
+        initialDarkMap: provider.isDarkMap,
+        onBack: provider.closeRouteMap,
+      );
+    }
+
+    // Jika sedang di layar Riwayat Workout
+    if (provider.currentScreen == AppScreen.history) {
+      return const WorkoutHistoryScreen();
+    }
+
     final isFullMap = provider.isMapFullScreen;
 
     return Scaffold(
@@ -132,10 +151,20 @@ class DashboardCockpitScreen extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // App Brand & Subtitle
+          // Hamburger Menu & App Brand
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Hamburger Menu Button
+              IconButton(
+                icon: const Icon(Icons.menu_rounded, size: 20, color: Color(0xFFCBD5E1)),
+                tooltip: 'Menu Utama',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                onPressed: () => _showNavigationMenu(context, provider),
+              ),
+              const SizedBox(width: 4),
+
               Container(
                 width: 7,
                 height: 7,
@@ -486,6 +515,233 @@ class DashboardCockpitScreen extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showNavigationMenu(BuildContext context, DashboardProvider provider) {
+    final isFun = provider.isFunMode;
+    final primaryColor = isFun ? const Color(0xFF00E5FF) : Colors.white;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        child: Container(
+          width: 380,
+          decoration: AppTheme.glassCard(
+            borderColor: isFun ? const Color(0xFF00E5FF).withOpacity(0.5) : const Color(0xFF475569),
+            fillColor: const Color(0xFF0F172A).withOpacity(0.98),
+            radius: 12,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.menu_open_rounded, color: primaryColor, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'MENU NAVIGASI',
+                            style: TextStyle(
+                              fontSize: 12.0,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.6,
+                              color: primaryColor,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          const Text(
+                            'Pilih layar aplikasi',
+                            style: TextStyle(fontSize: 9.0, color: Color(0xFF94A3B8)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 16),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+              ),
+
+              const Divider(color: Color(0xFF334155), height: 1),
+
+              // Menu Options
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                child: Column(
+                  children: [
+                    // Item 1: Dashboard Cockpit
+                    _buildMenuItem(
+                      icon: Icons.dashboard_rounded,
+                      title: 'Dashboard Cockpit',
+                      subtitle: 'Speedometer, peta navigasi & vital signs',
+                      isActive: provider.currentScreen == AppScreen.dashboard,
+                      activeColor: primaryColor,
+                      onTap: () {
+                        Navigator.of(ctx).pop();
+                        provider.setScreen(AppScreen.dashboard);
+                      },
+                    ),
+
+                    const SizedBox(height: 6),
+
+                    // Item 2: Riwayat Workout
+                    StreamBuilder<List<WorkoutSession>>(
+                      stream: provider.historyService.historyStream,
+                      initialData: provider.historyService.sessions,
+                      builder: (context, snapshot) {
+                        final count = snapshot.data?.length ?? 0;
+                        return _buildMenuItem(
+                          icon: Icons.history_rounded,
+                          title: 'Riwayat Workout',
+                          subtitle: 'Catatan sesi berkendara yang disimpan',
+                          badgeText: count > 0 ? '$count Sesi' : null,
+                          isActive: provider.currentScreen == AppScreen.history,
+                          activeColor: const Color(0xFF10B981),
+                          onTap: () {
+                            Navigator.of(ctx).pop();
+                            provider.setScreen(AppScreen.history);
+                          },
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+
+              // Session Status Footer
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B).withOpacity(0.5),
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                  border: const Border(top: BorderSide(color: Color(0xFF334155), width: 0.8)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: provider.isSessionActive
+                            ? const Color(0xFF10B981)
+                            : (provider.isSessionPaused ? const Color(0xFFF59E0B) : const Color(0xFF64748B)),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        provider.isSessionActive
+                            ? 'Sesi Aktif: ${provider.sessionDuration.inMinutes}m ${provider.sessionDuration.inSeconds % 60}s (${provider.sessionDistanceKm.toStringAsFixed(1)} km)'
+                            : (provider.isSessionPaused
+                                ? 'Sesi Dijeda (${provider.sessionDuration.inMinutes}m)'
+                                : 'Sesi Belum Dimulai'),
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700,
+                          color: provider.isSessionActive
+                              ? const Color(0xFF34D399)
+                              : (provider.isSessionPaused ? const Color(0xFFFBBF24) : const Color(0xFF94A3B8)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMenuItem({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    String? badgeText,
+    required bool isActive,
+    required Color activeColor,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: isActive ? activeColor.withOpacity(0.12) : const Color(0xFF1E293B).withOpacity(0.4),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isActive ? activeColor.withOpacity(0.6) : const Color(0xFF334155),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: isActive ? activeColor.withOpacity(0.2) : const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Icon(icon, size: 18, color: isActive ? activeColor : const Color(0xFFCBD5E1)),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                      color: isActive ? Colors.white : const Color(0xFFCBD5E1),
+                    ),
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(fontSize: 9.0, color: Color(0xFF94A3B8)),
+                  ),
+                ],
+              ),
+            ),
+            if (badgeText != null)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF064E3B),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF059669), width: 0.8),
+                ),
+                child: Text(
+                  badgeText,
+                  style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: Color(0xFF34D399)),
+                ),
+              ),
+            if (isActive) ...[
+              const SizedBox(width: 6),
+              Icon(Icons.check_circle_rounded, size: 14, color: activeColor),
+            ],
+          ],
+        ),
       ),
     );
   }
